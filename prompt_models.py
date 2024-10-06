@@ -4,6 +4,12 @@ import weave
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import instructor
+import time
+
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -43,12 +49,16 @@ client = instructor.from_openai(client)
 
 
 @weave.op
-def call_dummy_llm(system_prompt: str = "",
-              user_prompt: str = "",
-              model_name: str = "gpt-4o-mini",
-              response_model: BaseModel = None,
-            #   temperature: float = None,
-              ):
+def call_dummy_llm(
+    system_prompt: str = "",
+    user_prompt: str = "",
+    model_name: str = "gpt-4o-mini",
+    response_model: BaseModel = None,
+    sleep_time: float = 0,
+):
+    if sleep_time > 0:
+        logger.debug(f"Sleeping for {sleep_time} seconds")
+        time.sleep(sleep_time)
     return PromptModel(
         original_input_user_prompt=user_prompt,
         system_prompt=system_prompt,
