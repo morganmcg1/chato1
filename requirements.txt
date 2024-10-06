@@ -1,0 +1,6 @@
+openai
+weave
+markdown
+bleach
+python-fasthtml
+instructor
