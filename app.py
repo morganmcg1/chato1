@@ -179,12 +179,13 @@ def get():
                     create_grading_buttons(),
                     cls='grading-container'
                 ),
+                create_polling_trigger_div()
             ),
         ),
         Div(
             create_submission_form(),
             style='position: fixed; bottom: 20px; left: 0; right: 0; background: #fff; padding: 10px 20px;'
-        )
+        ),
     )
 
 def create_submission_form():
@@ -214,6 +215,13 @@ def create_output_box(box_id):
         Div(id=f'{box_id}-content', cls='output-content'),
         id=box_id,
         cls='output-box',
+    )
+
+def create_polling_trigger_div():
+    return Div(
+        '',
+        id='generations-polling-trigger',
+        style='display: none;',
     )
 
 def create_grading_buttons():
@@ -262,11 +270,8 @@ def create_output_box_with_trigger(box_id):
             id=f'{box_id}-content',
             cls='output-content',
             # hx_trigger='outputs1and2Loaded from:window',
-            # hx_get=f'/process_additional_outputs?box_id={box_id}',
-            hx_get='/process_additional_outputs',
-            hx_trigger='generateResponses from:window',
-            hx_vals='js:event.detail',
-            # hx_swap='innerHTML',
+            # hx_get='/process_additional_outputs',
+            # hx_vals='js:event.detail',
         ),
         id=box_id,
         cls='output-box',
@@ -377,32 +382,79 @@ def grade_output(grade: str, session):
 #     logger.debug(f"get generations/ called with call_id: {call_id}")
 #     return generation_preview(call_id)
 
-@rt("/generations", methods=['GET'])
+@rt("/check_generations", methods=['GET'])
 def get_generations(request):
     call_id = request.query_params.get('call_id')
     if not call_id:
         return HTMLResponse("Missing call_id in get_generations", status_code=400)
     logger.debug(f"get generations called with call_id: {call_id}")
-    return generation_preview(call_id)
+    return display_generations(call_id)
 
 
 
-def generation_preview(call_id):
+def display_generations(call_id):
     # check if there is a generation for call_id in the db yet
     try:
         logger.debug(f"Trying to get generation: {call_id}-o1_prompt")
-        o1_gen = generations_tbl[f"{call_id}-o1_prompt"]
-        gen_complete = True
+        o1_prompt = generations_tbl[f"{call_id}-o1_prompt"]
+        prompt_gen_complete = True
     except:
-        gen_complete = False
+        prompt_gen_complete = False
 
-    if gen_complete:
-        o1_gen = generations_tbl[f"{call_id}-o1_prompt"]
-        o1_prompt_json = o1_gen.output
-        logger.debug(f"WE HAVE A GENERATION! Triggering additional outputs")
+    try:
+        logger.debug(f"Trying to get final output: {call_id}-o1_output")
+        o1_output_gen = generations_tbl[f"{call_id}-o1_output"]
+        output_gen_complete = True
+    except:
+        output_gen_complete = False
+
+    if output_gen_complete:
+        challenger_output = generations_tbl[f"{call_id}-challenger_output"]
+        
+        o1_output_json = o1_output_gen.output
+        challenger_output_json = challenger_output.output
+
+        logger.debug(f"WE HAVE A GENERATION! Triggering further processing")
+        
+        # Build the content to return as a list of Divs so that both outputs can be returned
+        content = ''.join([
+            # Update output-box3-content with call_id in hx_get
+            Div(
+                P(o1_output_json),
+                id='output-box3-content',
+                cls='output-content',
+                hx_swap='innerHTML',
+                hx_swap_oob='true',
+            ).__html__(),
+            # Update output-box4-content with call_id in hx_get
+            Div(
+                P(challenger_output_json),
+                id='output-box4-content',
+                cls='output-content',
+                hx_swap='innerHTML',
+                hx_swap_oob='true',
+
+            ).__html__(),
+            # Stop polling
+            Div(
+                '',
+                id='generations-polling-trigger',
+                hx_swap='innerHTML', 
+                hx_swap_oob='true',
+                style='display: hidden;',  
+            ).__html__(),
+        ])
+        # Create the response with the HX-Trigger header
+        response = HTMLResponse(content=content + clear_submission_input().__html__())
+        return response
+    
+    elif prompt_gen_complete:
+        o1_prompt_json = o1_prompt.output
 
         challenger_gen = generations_tbl[f"{call_id}-challenger_prompt"]
         challenger_prompt_json = challenger_gen.output
+
+        logger.debug(f"WE HAVE A GENERATION! Triggering further processing")
         
         # Build the content to return as a list of Divs so that both outputs can be returned
         content = ''.join([
@@ -416,79 +468,53 @@ def generation_preview(call_id):
                 id='output-box2-content',
                 hx_swap_oob='true',
             ).__html__(),
+            # Update output-box3-content with call_id in hx_get
             Div(
                 P("Generating..."),
                 id='output-box3-content',
-                hx_swap='innerHTML',  # just update the content, not the entire box
+                cls='output-content',
+                hx_swap='innerHTML',
                 hx_swap_oob='true',
-                sse_connect=f"/sse_output/o1_output?call_id={call_id}",
-                sse_event="o1_output_event",
-                # sse_swap="message"
-                # sse_swap="innerHTML",
-            ).__html__(), 
+            ).__html__(),
+            # Update output-box4-content with call_id in hx_get
             Div(
                 P("Generating..."),
                 id='output-box4-content',
+                cls='output-content',
+                hx_swap='innerHTML',
+                hx_swap_oob='true',
+
+            ).__html__(),
+            # polling route for final outputs
+            Div(
+                '',
+                id='generations-polling-trigger',
+                hx_trigger='every 500ms',
+                hx_get=f"/check_generations?call_id={call_id}",
                 hx_swap='innerHTML', 
                 hx_swap_oob='true',
-                sse_connect=f"/sse_output/challenger_output?call_id={call_id}",
-                sse_event="challenger_output_event",
-                # sse_swap="message"
+                style='display: hidden;',  
             ).__html__(),
-            # # Update output-box3-content with call_id in hx_get
-            # Div(
-            #     id='output-box3-content',
-            #     cls='output-content',
-            #     # hx_trigger='outputs1and2Loaded from:window',
-            #     hx_trigger_after_swap='outputs1and2Loaded from:window',
-            #     # hx_get=f'/process_additional_outputs?box_id=output-box3&call_id={call_id}',
-            #     hx_get=f'/process_additional_outputs',
-            #     hx_vals=json.dumps({'box_id': 'output-box3', 'call_id': call_id}),
-            #     hx_swap='innerHTML',
-            #     hx_swap_oob='true',
-            # ).__html__(),
-            # # Update output-box4-content with call_id in hx_get
-            # Div(
-            #     id='output-box4-content',
-            #     cls='output-content',
-            #     # hx_trigger='outputs1and2Loaded from:window',
-            #     hx_trigger_after_swap='outputs1and2Loaded from:window',
-            #     hx_get=f'/process_additional_outputs',
-            #     hx_vals=json.dumps({'box_id': 'output-box4', 'call_id': call_id}),
-            #     hx_swap='innerHTML',
-            #     hx_swap_oob='true',
-            # ).__html__(),
         ])
         # Create the response with the HX-Trigger header
         response = HTMLResponse(content=content + clear_submission_input().__html__())
-        # response.headers['HX-Trigger'] = '.outputs1and2Loaded'  # Trigger 3+4 if 1+2 are loaded, By adding a dot . before the event name, HTMX will dispatch the event after the content has been swapped into the DOM.
-        # response.headers['HX-Trigger-After-Swap'] = 'outputs1and2Loaded'  # Trigger 3+4 if 1+2 are loaded, By adding a dot . before the event name, HTMX will dispatch the event after the content has been swapped into the DOM.
-        response.headers['HX-Trigger'] = json.dumps({
-            'generateResponses': {
-                'call_id': call_id,
-                'o1_prompt_json': o1_prompt_json,
-                'challenger_prompt_json': challenger_prompt_json,
-            }
-        })
-        # TODO: consider adding json outputs to to the trigger like so `HX-Trigger: {"triggerName":{"level" : "info", "message" : "Here Is A Message"}}`
         return response
+    
     else:
         content = ''.join([
             Div(
                 P("Generating..."),
                 id='output-box1-content',
-                hx_get=f"/generations?call_id={call_id}",
+                # hx_get=f"/generations?call_id={call_id}",
                 hx_swap='innerHTML',  # just update the content, not the entire box
                 hx_swap_oob='true',
-                hx_trigger='every 200ms',
+                # hx_trigger='every 200ms',
             ).__html__(), 
             Div(
                 P("Generating..."),
                 id='output-box2-content',
-                hx_get=f"/generations?call_id={call_id}",
                 hx_swap='innerHTML', 
                 hx_swap_oob='true',
-                hx_trigger='every 200ms',  # poll every 1 second
             ).__html__(),
             Div(
                 P("Queued..."),
@@ -501,6 +527,16 @@ def generation_preview(call_id):
                 id='output-box4-content',
                 hx_swap='innerHTML', 
                 hx_swap_oob='true',
+            ).__html__(),
+            # Hidden element with the polling trigger
+            Div(
+                '',
+                id='generations-polling-trigger',
+                hx_trigger='every 500ms',
+                hx_get=f"/generations?call_id={call_id}",
+                hx_swap='innerHTML', 
+                hx_swap_oob='true',
+                style='display: hidden;',  
             ).__html__(),
         ])
 
@@ -527,11 +563,10 @@ def generation_preview(call_id):
 
 
 
-# @threaded
-# def generate_candidate_prompts(user_input: str, session, call_id: str):
-
-async def generate_candidate_prompts(user_input: str, session, call_id: str):
-    session_id = session.get("session_id")
+@threaded
+def generate_candidate_prompts(user_input: str, session, call_id: str):
+# async def generate_candidate_prompts(user_input: str, session, call_id: str):
+    
     logger.debug(f"Getting first outputs for: {user_input}")
     o1_prompt = call_dummy_llm(
         user_prompt=user_input,
@@ -554,6 +589,8 @@ async def generate_candidate_prompts(user_input: str, session, call_id: str):
     logger.debug(f"challenger_prompt_json: {challenger_prompt_json}")
 
     # insert the generation into the database
+    session_id = session.get("session_id")
+
     logger.debug(f"Inserting generation into database: {call_id}-o1_prompt:\n{o1_prompt_json}")
     generations_tbl.insert(Generation(
         call_id=call_id + '-o1_prompt',
@@ -585,20 +622,22 @@ def clear_submission_input():
         hx_swap_oob='true'      # Perform out-of-band swap
     )
 
-async def run_generation_pipeline(user_input: str, session, call_id: str):
+# async def run_generation_pipeline(user_input: str, session, call_id: str):
     
-    o1_prompt_json, challenger_prompt_json = await generate_candidate_prompts(user_input, session, call_id)
+#     o1_prompt_json, challenger_prompt_json = await generate_candidate_prompts(user_input, session, call_id)
     
-    o1_output, challenger_output = await process_additional_outputs(o1_prompt_json, challenger_prompt_json, session, call_id)
+#     o1_output, challenger_output = await process_additional_outputs(o1_prompt_json, challenger_prompt_json, session, call_id)
     
-   # Store outputs using 'call_id' as the key
-    logger.debug(f"Storing outputs in the session variable")
-    session['outputs'][call_id] = {
-        'o1_output': o1_output,
-        'challenger_output': challenger_output
-    }
+#    # Store outputs using 'call_id' as the key
+#     logger.debug(f"Storing outputs for call_id: {call_id} in the session variable")
+#     session['outputs'][call_id] = {
+#         'o1_output': o1_output,
+#         'challenger_output': challenger_output
+#     }
 
-    return o1_output, challenger_output
+#     logger.debug(f"Session updated, session: {session}")
+
+#     return o1_output, challenger_output
 
 
 
@@ -607,8 +646,9 @@ async def run_generation_pipeline(user_input: str, session, call_id: str):
 async def sse_output(session, call_id: str, output_name: str):
     async def output_generator():
         while True:
-            logger.debug(f"In SSE monitor for {output_name}")
+            logger.debug(f"In SSE monitor for {output_name}, call_id: {call_id}, session: {session}")
             outputs = session.get('outputs', {}).get(call_id, {})
+            logger.debug(f"In SSE monitor searching for {output_name} in outputs: {outputs}")
             if output_name in outputs:
                 logger.debug(f"Sending SSE message for {output_name}: {outputs[output_name]}")
                 yield sse_message(P(outputs[output_name]), event=f'{output_name}_event')
@@ -617,50 +657,53 @@ async def sse_output(session, call_id: str, output_name: str):
                 if not session['outputs'][call_id]:
                     del session['outputs'][call_id]
                 break
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(5)  # TODO drop sleep time again
     return EventStream(output_generator())
 
 
-def simple_generation_preview(call_id):
-    content = ''.join([
-        Div(
-            P("Generating..."),
-            id='output-box1-content',
-            # hx_get=f"/generations?call_id={call_id}",
-            hx_swap='innerHTML',  # just update the content, not the entire box
-            hx_swap_oob='true',
-            # hx_trigger='every 200ms',
-        ).__html__(), 
-        Div(
-            P("Generating..."),
-            id='output-box2-content',
-            # hx_get=f"/generations?call_id={call_id}",
-            hx_swap='innerHTML', 
-            hx_swap_oob='true',
-            # hx_trigger='every 200ms',  # poll every 1 second
-        ).__html__(),
-        Div(
-            P("Generating..."),
-            id='output-box3-content',
-            hx_swap='innerHTML',  # just update the content, not the entire box
-            hx_swap_oob='true',
-            sse_connect=f"/sse_output_monitor/o1_output?call_id={call_id}",
-            sse_event="o1_output_event",
-            sse_swap="message"
-            # sse_swap="innerHTML",
-            ).__html__(), 
-        Div(
-            P("Generating..."),
-            id='output-box4-content',
-            hx_swap='innerHTML', 
-            hx_swap_oob='true',
-            sse_connect=f"/sse_output_monitor/challenger_output?call_id={call_id}",
-            sse_event="challenger_output_event",
-            # sse_swap="innerHTML",
-            sse_swap="message"
-        ).__html__(),
-    ])
-    return HTMLResponse(content=content + clear_submission_input().__html__())
+# def simple_generation_preview(call_id):
+#     logger.debug(f"In simple_generation_preview for call_id: {call_id}")
+#     content = ''.join([
+#         Div(
+#             P("Generating..."),
+#             id='output-box1-content',
+#             # hx_get=f"/generations?call_id={call_id}",
+#             hx_swap='innerHTML',  # just update the content, not the entire box
+#             hx_swap_oob='true',
+#             # hx_trigger='every 200ms',
+#         ).__html__(), 
+#         Div(
+#             P("Generating..."),
+#             id='output-box2-content',
+#             # hx_get=f"/generations?call_id={call_id}",
+#             hx_swap='innerHTML', 
+#             hx_swap_oob='true',
+#             # hx_trigger='every 200ms',  # poll every 1 second
+#         ).__html__(),
+#         Div(
+#             P("Generating..."),
+#             id='output-box3-content',
+#             hx_swap='innerHTML',  # just update the content, not the entire box
+#             hx_swap_oob='true',
+#             hx_ext='sse', 
+#             sse_connect=f"/sse_output_monitor/o1_output?call_id={call_id}",
+#             sse_event="o1_output_event",
+#             sse_swap="message"
+#             # sse_swap="innerHTML",
+#             ).__html__(), 
+#         Div(
+#             P("Generating..."),
+#             id='output-box4-content',
+#             hx_swap='innerHTML', 
+#             hx_swap_oob='true',
+#             hx_ext='sse', 
+#             sse_connect=f"/sse_output_monitor/challenger_output?call_id={call_id}",
+#             sse_event="challenger_output_event",
+#             # sse_swap="innerHTML",
+#             sse_swap="message"
+#         ).__html__(),
+#     ])
+#     return HTMLResponse(content=content + clear_submission_input().__html__())
 
 
 @rt('/output', methods=['POST'])
@@ -672,46 +715,92 @@ async def output(user_input: str, session):
     '''
     call_id = str(uuid.uuid4())
     # Initialize 'outputs' in session if it doesn't exist, we'll listen for updates to this dict in the frontend
+    if 'outputs' in session:
+        del session['outputs']
     session.setdefault(f'outputs', {})
-    # o1_prompt_json, challenger_prompt_json = generate_candidate_prompts(user_input, session, call_id)
+    generate_candidate_prompts(user_input, session, call_id)
+
     # o1_output, challenger_output = asyncio.run(run_generation_pipeline(user_input, session, call_id))
     # logger.debug(f"finished run_generation_pipeline for call_id: {call_id}, o1_output: {o1_output}, challenger_output: {challenger_output}")
     
-    asyncio.create_task(run_generation_pipeline(user_input, session, call_id))
+    # asyncio.create_task(run_generation_pipeline(user_input, session, call_id))
     
-
     # TODO: move clearing the submission form to here?
-    # return generation_preview(call_id)
-    return simple_generation_preview(call_id)
+    return display_generations(call_id)
+    # return simple_generation_preview(call_id)
 
-# @rt('/process_additional_outputs', methods=['GET'])
-# def process_additional_outputs(request):
-
-async def process_additional_outputs(o1_prompt_json, challenger_prompt_json, session, call_id):
+@rt('/process_additional_outputs', methods=['GET'])
+def get(request):
+# async def process_additional_outputs(o1_prompt_json, challenger_prompt_json, session, call_id):
     logger.debug(f"Processing additional outputs")
     # o1_prompt_json = session.get('o1_prompt_json', '')
     # challenger_prompt_json = session.get('challenger_prompt_json', '')
     # data = request.json()
-    # data = request.query_params
-    # box_id = data.get('box_id')
-    # call_id = data.get('call_id')
-    
-    o1_prompt_json = 'o1_prompt_json'
-    challenger_prompt_json = 'challenger_prompt_json'
+    data = request.query_params
+    box_id = data.get('box_id')
+    prompt = data.get('prompt')
+    call_id = data.get('call_id')
+
+    # prompt = generations_tbl[f"{call_id}-{output_type}"]
+    # prompt_json = prompt.output
 
     # Simulate processing delay
     import time
-    time.sleep(0.5)  # Simulate delay
+    time.sleep(0.1)  # Simulate delay
+
+    logger.debug(f"Getting final outputs for: {user_input}")
+    o1_prompt = call_dummy_llm(
+        user_prompt=user_input,
+        model_name="gpt-4o-mini",
+        response_model=PromptModel,
+        sleep_time=2
+    )
+    o1_prompt_json = o1_prompt.model_dump_json()
+    o1_prompt_json = o1_prompt.user_prompt
+    logger.debug(f"o1_prompt_json: {o1_prompt_json}")
+
+    challenger_prompt = call_dummy_llm(
+        system_prompt=PROMPT_GEN_SYSTEM_PROMPT,
+        user_prompt=user_input,
+        model_name="gpt-4o-mini",
+        response_model=PromptModel
+    )
+    challenger_prompt_json = challenger_prompt.model_dump_json()
+    challenger_prompt_json = challenger_prompt.user_prompt
+    logger.debug(f"challenger_prompt_json: {challenger_prompt_json}")
+
+    # insert the generation into the database
+    session_id = session.get("session_id")
+
+    logger.debug(f"Inserting generation into database: {call_id}-o1_prompt:\n{o1_prompt_json}")
+    generations_tbl.insert(Generation(
+        call_id=call_id + '-o1_prompt',
+        session_id=session_id,
+        call_type='o1_prompt',
+        input=user_input, 
+        output=o1_prompt_json, 
+        timestamp=datetime.now().isoformat()
+    ))
+
+    logger.debug(f"Inserting generation into database: {call_id}-challenger_prompt:\n{challenger_prompt_json}")
+    generations_tbl.insert(Generation(
+        call_id=call_id + '-challenger_prompt',
+        session_id=session_id,
+        call_type='challenger_prompt',
+        input=user_input, 
+        output=challenger_prompt_json, 
+        timestamp=datetime.now().isoformat()
+    ))
+    return o1_prompt_json, challenger_prompt_json
 
     # Process outputs based on `box_id`
-    output_content1 = o1_prompt_json.upper()
-    output_content2 = challenger_prompt_json.upper()
+    output_content = prompt.upper()
 
-    return output_content1, output_content2
-    # return Div(
-    #     P(output_content),
-    #     id=f'{box_id}-content',
-    # )
+    # return output_content1, output_content2
+    return Div(
+        P(output_content),
+        id=f'{box_id}-content',
+    )
 
 serve(
     reload=True,
