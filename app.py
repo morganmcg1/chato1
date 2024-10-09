@@ -37,14 +37,14 @@ class Generation:
 
 generations_tbl = db.create(Generation, pk='call_id', transform=True)
 
-
 app, rt = fast_app(
     pico=False, # Disable Pico.css to prevent style conflicts
     hdrs=(
         Link(rel='stylesheet', href='https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap'),
         Script(src="https://unpkg.com/htmx.org@1.9.2"),
+        Script(src="https://unpkg.com/htmx-ext-sse@2.2.1/sse.js")  # SSE for server-sent events
     )
-    )  
+)  
 
 style = Style("""
     *, *::before, *::after {
@@ -386,6 +386,7 @@ def get_generations(request):
     return generation_preview(call_id)
 
 
+
 def generation_preview(call_id):
     # check if there is a generation for call_id in the db yet
     try:
@@ -420,12 +421,19 @@ def generation_preview(call_id):
                 id='output-box3-content',
                 hx_swap='innerHTML',  # just update the content, not the entire box
                 hx_swap_oob='true',
+                sse_connect=f"/sse_output/o1_output?call_id={call_id}",
+                sse_event="o1_output_event",
+                # sse_swap="message"
+                # sse_swap="innerHTML",
             ).__html__(), 
             Div(
                 P("Generating..."),
                 id='output-box4-content',
                 hx_swap='innerHTML', 
                 hx_swap_oob='true',
+                sse_connect=f"/sse_output/challenger_output?call_id={call_id}",
+                sse_event="challenger_output_event",
+                # sse_swap="message"
             ).__html__(),
             # # Update output-box3-content with call_id in hx_get
             # Div(
@@ -578,26 +586,103 @@ def clear_submission_input():
     )
 
 async def run_generation_pipeline(user_input: str, session, call_id: str):
-    o1_prompt_json, challenger_prompt_json = await generate_candidate_prompts(user_input, session, call_id)
-    o1_output, challenger_output = await process_additional_outputs(o1_prompt_json, challenger_prompt_json, session, call_id)
-    return o1_output, challenger_output
     
+    o1_prompt_json, challenger_prompt_json = await generate_candidate_prompts(user_input, session, call_id)
+    
+    o1_output, challenger_output = await process_additional_outputs(o1_prompt_json, challenger_prompt_json, session, call_id)
+    
+   # Store outputs using 'call_id' as the key
+    logger.debug(f"Storing outputs in the session variable")
+    session['outputs'][call_id] = {
+        'o1_output': o1_output,
+        'challenger_output': challenger_output
+    }
+
+    return o1_output, challenger_output
+
+
+
+# SSE endpoint for o1_output
+@rt('/sse_output_monitor/{output_name}')
+async def sse_output(session, call_id: str, output_name: str):
+    async def output_generator():
+        while True:
+            logger.debug(f"In SSE monitor for {output_name}")
+            outputs = session.get('outputs', {}).get(call_id, {})
+            if output_name in outputs:
+                logger.debug(f"Sending SSE message for {output_name}: {outputs[output_name]}")
+                yield sse_message(P(outputs[output_name]), event=f'{output_name}_event')
+                # Clean up after sending
+                del session['outputs'][call_id][output_name]
+                if not session['outputs'][call_id]:
+                    del session['outputs'][call_id]
+                break
+            await asyncio.sleep(0.1)
+    return EventStream(output_generator())
+
+
+def simple_generation_preview(call_id):
+    content = ''.join([
+        Div(
+            P("Generating..."),
+            id='output-box1-content',
+            # hx_get=f"/generations?call_id={call_id}",
+            hx_swap='innerHTML',  # just update the content, not the entire box
+            hx_swap_oob='true',
+            # hx_trigger='every 200ms',
+        ).__html__(), 
+        Div(
+            P("Generating..."),
+            id='output-box2-content',
+            # hx_get=f"/generations?call_id={call_id}",
+            hx_swap='innerHTML', 
+            hx_swap_oob='true',
+            # hx_trigger='every 200ms',  # poll every 1 second
+        ).__html__(),
+        Div(
+            P("Generating..."),
+            id='output-box3-content',
+            hx_swap='innerHTML',  # just update the content, not the entire box
+            hx_swap_oob='true',
+            sse_connect=f"/sse_output_monitor/o1_output?call_id={call_id}",
+            sse_event="o1_output_event",
+            sse_swap="message"
+            # sse_swap="innerHTML",
+            ).__html__(), 
+        Div(
+            P("Generating..."),
+            id='output-box4-content',
+            hx_swap='innerHTML', 
+            hx_swap_oob='true',
+            sse_connect=f"/sse_output_monitor/challenger_output?call_id={call_id}",
+            sse_event="challenger_output_event",
+            # sse_swap="innerHTML",
+            sse_swap="message"
+        ).__html__(),
+    ])
+    return HTMLResponse(content=content + clear_submission_input().__html__())
+
 
 @rt('/output', methods=['POST'])
-def output(user_input: str, session):
+async def output(user_input: str, session):
     '''
     This is the first call to get the candidate prompts.
     Candidate prompts are generated in a different thread, in the 
     meantime we display a loading message.
     '''
     call_id = str(uuid.uuid4())
-
+    # Initialize 'outputs' in session if it doesn't exist, we'll listen for updates to this dict in the frontend
+    session.setdefault(f'outputs', {})
     # o1_prompt_json, challenger_prompt_json = generate_candidate_prompts(user_input, session, call_id)
-    asyncio.run(run_generation_pipeline(user_input, session, call_id))
+    # o1_output, challenger_output = asyncio.run(run_generation_pipeline(user_input, session, call_id))
+    # logger.debug(f"finished run_generation_pipeline for call_id: {call_id}, o1_output: {o1_output}, challenger_output: {challenger_output}")
+    
+    asyncio.create_task(run_generation_pipeline(user_input, session, call_id))
+    
 
     # TODO: move clearing the submission form to here?
-    return generation_preview(call_id)
-
+    # return generation_preview(call_id)
+    return simple_generation_preview(call_id)
 
 # @rt('/process_additional_outputs', methods=['GET'])
 # def process_additional_outputs(request):
@@ -613,8 +698,6 @@ async def process_additional_outputs(o1_prompt_json, challenger_prompt_json, ses
     
     o1_prompt_json = 'o1_prompt_json'
     challenger_prompt_json = 'challenger_prompt_json'
-
-    logger.debug(f"Processing additional outputs for: call_id: {call_id}")
 
     # Simulate processing delay
     import time
